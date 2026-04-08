@@ -36,11 +36,4 @@ public class MobMixin {
             original.call(slot, itemStack);
         }
     }
-
-    @WrapMethod(method = "setBodyArmorItem")
-    private void equipLootStack(ItemStack item, Operation<Void> original) {
-        synchronized (lock) {
-            original.call(item);
-        }
-    }
 }
