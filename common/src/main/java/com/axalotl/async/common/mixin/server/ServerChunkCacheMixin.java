@@ -87,9 +87,25 @@ public abstract class ServerChunkCacheMixin extends ChunkSource {
         ChunkHolder holder = this.getVisibleChunkIfPresent(pos);
 
         if (holder != null) {
-            ChunkAccess ready = async$extractReady(holder, leastStatus);
-            if (ready != null) {
-                cir.setReturnValue(ready);
+            // Fast path: FULL status — try tickingChunk first (single field read,
+            // skips futures array + CompletableFuture.getNow + ChunkResult unwrap)
+            if (leastStatus == ChunkStatus.FULL) {
+                LevelChunk ticking = holder.getTickingChunk();
+                if (ticking != null) {
+                    cir.setReturnValue(ticking);
+                    return;
+                }
+            }
+
+            ChunkAccess chunk = holder.getChunkIfPresent(leastStatus);
+            if (chunk != null) {
+                cir.setReturnValue(async$unwrap(chunk));
+                return;
+            }
+
+            chunk = holder.getChunkIfPresentUnchecked(leastStatus);
+            if (chunk != null) {
+                cir.setReturnValue(async$unwrap(chunk));
                 return;
             }
 
@@ -118,27 +134,36 @@ public abstract class ServerChunkCacheMixin extends ChunkSource {
             return;
         }
 
+        // Fast path: tickingChunk is a single field read
+        LevelChunk ticking = holder.getTickingChunk();
+        if (ticking != null) {
+            cir.setReturnValue(ticking);
+            return;
+        }
+
+        // Fallback: check futures array
         ChunkAccess chunk = holder.getChunkIfPresent(ChunkStatus.FULL);
         if (chunk instanceof LevelChunk lc) {
             cir.setReturnValue(lc);
             return;
         }
 
-        cir.setReturnValue(holder.getTickingChunk());
+        cir.setReturnValue(null);
     }
 
     @Unique
     private static @Nullable ChunkAccess async$extractReady(ChunkHolder holder, ChunkStatus status) {
+        if (status == ChunkStatus.FULL) {
+            LevelChunk ticking = holder.getTickingChunk();
+            if (ticking != null) return ticking;
+        }
+
         ChunkAccess chunk = holder.getChunkIfPresent(status);
         if (chunk != null) return async$unwrap(chunk);
 
         chunk = holder.getChunkIfPresentUnchecked(status);
         if (chunk != null) return async$unwrap(chunk);
 
-        if (status == ChunkStatus.FULL) {
-            LevelChunk ticking = holder.getTickingChunk();
-            if (ticking != null) return ticking;
-        }
         return null;
     }
 
