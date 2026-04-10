@@ -27,6 +27,9 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
@@ -61,6 +64,8 @@ public abstract class ServerChunkCacheMixin extends ChunkSource {
     private void async$replaceWithConcurrentSet(CallbackInfo ci) {
         this.chunkHoldersToBroadcast = ConcurrentHashMap.newKeySet();
     }
+
+    @Unique private static final Logger LOGGER = LoggerFactory.getLogger("Async-ChunkTick");
 
     @Unique private volatile CompletableFuture<Void> async$spawnFuture;
     @Unique private long async$capturedTimeDiff;
@@ -303,8 +308,12 @@ public abstract class ServerChunkCacheMixin extends ChunkSource {
             futures[idx] = CompletableFuture.runAsync(() -> {
                 for (int i = start; i < end; i++) {
                     LevelChunk c = chunks[i];
-                    c.incrementInhabitedTime(timeDiff);
-                    NaturalSpawner.spawnForChunk(lvl, c, state, categories);
+                    try {
+                        c.incrementInhabitedTime(timeDiff);
+                        NaturalSpawner.spawnForChunk(lvl, c, state, categories);
+                    } catch (Exception e) {
+                        LOGGER.error("Exception spawning in chunk {}", c.getPos(), e);
+                    }
                 }
             }, ParallelProcessor.executor);
         }
@@ -349,7 +358,11 @@ public abstract class ServerChunkCacheMixin extends ChunkSource {
             int end = Math.min(b + batchSize, tickChunks.size());
             futures[idx] = CompletableFuture.runAsync(() -> {
                 for (int j = start; j < end; j++) {
-                    consumer.accept(tickChunks.get(j));
+                    try {
+                        consumer.accept(tickChunks.get(j));
+                    } catch (Exception e) {
+                        LOGGER.error("Exception ticking chunk {}", tickChunks.get(j).getPos(), e);
+                    }
                 }
             }, ParallelProcessor.executor);
         }
@@ -360,11 +373,9 @@ public abstract class ServerChunkCacheMixin extends ChunkSource {
     @Unique
     private void async$pumpUntilDone(CompletableFuture<?> future) {
         while (!future.isDone()) {
-            boolean pumped = false;
-            for (ServerLevel lvl : ParallelProcessor.getServer().getAllLevels()) {
-                pumped |= lvl.getChunkSource().pollTask();
+            if (!this.level.getChunkSource().pollTask()) {
+                Thread.onSpinWait();
             }
-            if (!pumped) Thread.onSpinWait();
         }
         if (future.isCompletedExceptionally()) {
             future.join();
